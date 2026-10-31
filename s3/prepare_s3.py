@@ -12,6 +12,10 @@ if mp3.stat().st_size < 100 or mp3.stat().st_size > 1024*1024:sys.exit('Invalid 
 # Only modify a fresh throwaway clone; preserve original source with backup.
 target=base/'main/main.cpp'
 if (base/'.halloween-injected').exists():sys.exit('Refusing repeat patch')
+# We replace the upstream SquareLine UI entirely. Its generated/fonts and generated/images
+# directories are not in git, so IDF 5.5 CMake fails if the unused UI component is built.
+ui_cmake=base/'components/ui/CMakeLists.txt'
+if ui_cmake.exists(): ui_cmake.rename(ui_cmake.with_name('CMakeLists.txt.disabled'))
 shutil.copy(target,target.with_suffix('.cpp.original'))
 shutil.copy(source/'s3/main.cpp',target)
 shutil.copy(mp3,base/'main/Witches_Sound_cleaned_louder.mp3')
