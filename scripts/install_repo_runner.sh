@@ -3,14 +3,30 @@
 set -euo pipefail
 REPO_URL="https://github.com/layuso/Halloween-Audio-Dial-Player"
 RUNNER_NAME="waymarker-build-01-halloween"
-RUNNER_LABEL="halloween-dial-builder"
+RUNNER_LABEL="halloween-build"
 RUNNER_HOME="$HOME/actions-runner-halloween"
 if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "aarch64" ]]; then
   echo "Expected ARM64 Linux build Pi, got $(uname -s) $(uname -m)" >&2; exit 1
 fi
 for tool in curl python3 tar sha256sum; do command -v "$tool" >/dev/null || { echo "Missing $tool"; exit 1; }; done
 if [[ -e "$RUNNER_HOME/.runner" ]]; then
- echo "Runner is already configured: $RUNNER_HOME"; exit 0
+ echo "Runner already configured at $RUNNER_HOME; validating registration scope..."
+ python3 - "$RUNNER_HOME/.runner" "$REPO_URL" <<'PY'
+import json,sys
+with open(sys.argv[1]) as f: d=json.load(f)
+url=(d.get("gitHubUrl") or "").rstrip("/")
+if url.lower()!=sys.argv[2].lower():
+    raise SystemExit(f"Wrong repo registration: {url}; refusing to reuse runner")
+print("Repo URL confirmed:", url)
+PY
+ cd "$RUNNER_HOME"
+ if [[ -x ./svc.sh ]]; then
+   sudo ./svc.sh install "$(id -un)" 2>/dev/null || true
+   sudo ./svc.sh start || true
+   sudo ./svc.sh status
+ fi
+ echo "Runner must have the halloween-build label in GitHub settings."
+ exit 0
 fi
 mkdir -p "$RUNNER_HOME"
 cd "$RUNNER_HOME"
