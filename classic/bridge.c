@@ -5,10 +5,12 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-/* Measured inter-MCU link: S3 TX40 -> ESP32 RX23; ESP32 TX18 -> S3 RX39 */
+/* UART1 cross-link, per factory firmware and board measurements:
+ * S3 TX40 -> Classic RX18; Classic TX23 -> S3 RX39.
+ * Do not confuse the two Classic pins: TX23 / RX18. */
 #define LINK_UART UART_NUM_1
-#define UART_RX 23
-#define UART_TX 18
+#define UART_RX 18
+#define UART_TX 23
 #define RING_SAMPLES 16384
 #define HEADER 0xA5
 #define MARKER 0x5A
@@ -77,7 +79,12 @@ static void receiver(void *unused) {
         int64_t now=esp_timer_get_time();
         if(now-last_status>1000000){
             uint8_t status=paired?'C':'D';
-            uart_write_bytes(LINK_UART,&status,1);
+            int sent=uart_write_bytes(LINK_UART,&status,1);
+            if(sent!=1) ESP_LOGE(TAG,"UART heartbeat failed: wrote %d of 1 byte",sent);
+            /* Periodic diagnostic without flooding the Classic USB serial monitor. */
+            static unsigned hb_count=0;
+            if((++hb_count % 10)==1)
+                ESP_LOGI(TAG,"UART heartbeat TX %c on GPIO23; BT connected=%d",status,(int)paired);
             last_status=now;
         }
     }
@@ -88,7 +95,7 @@ void hw_bridge_start(void) {
     ESP_ERROR_CHECK(uart_param_config(LINK_UART,&cfg));
     ESP_ERROR_CHECK(uart_set_pin(LINK_UART,UART_TX,UART_RX,UART_PIN_NO_CHANGE,UART_PIN_NO_CHANGE));
     xTaskCreate(receiver,"halloween_rx",4096,NULL,6,NULL);
-    ESP_LOGI(TAG,"UART bridge ready; RX23 TX18 @921600");
+    ESP_LOGI(TAG,"UART bridge ready; RX18 TX23 @921600 (S3 TX40 RX39)");
 }
 void hw_bridge_set_connected(bool connected) {paired=connected;if(!connected){stream_active=false;reset_ring();}}
 bool hw_bridge_take_pair_request(void) {bool was=request_pair;request_pair=false;return was;}
