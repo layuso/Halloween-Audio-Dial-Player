@@ -32,12 +32,12 @@ from pathlib import Path
 import sys
 panel, cmake, sdk = (Path(v) for v in sys.argv[1:])
 s = panel.read_text()
-old = '{0x21, (uint8_t[]){0x00}, 1, 0},'
-new = '{0x20, (uint8_t[]){0x00}, 1, 0},'
-if old in s:
-    assert s.count(old) == 1
-    panel.write_text(s.replace(old, new))
-elif new not in s:
+correct = '{0x21, (uint8_t[]){0x00}, 1, 0},'
+wrong = '{0x20, (uint8_t[]){0x00}, 1, 0},'
+if wrong in s:
+    assert s.count(wrong) == 1
+    panel.write_text(s.replace(wrong, correct))
+elif s.count(correct) != 1:
     raise SystemExit('Unknown panel inversion command: nothing will flash')
 s = cmake.read_text()
 if 'user_encoder_bsp' not in s:
