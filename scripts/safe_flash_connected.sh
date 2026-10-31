@@ -8,11 +8,21 @@ if (( ${#PORTS[@]} != 1 )); then
   echo "FLASH_SKIPPED: expected exactly one USB serial device, found ${#PORTS[@]}"; exit 0
 fi
 PORT="${PORTS[0]}"
-INFO="$(python -m esptool --port "$PORT" flash-id 2>&1)" || { echo "FLASH_SKIPPED: no ESP identified"; exit 0; }
-echo "$INFO" | grep -E 'Chip type:|flash size:|MAC:' || true
-CHIP="$(echo "$INFO" | sed -n 's/^Chip type: \(.*\)$/\1/p' | head -1)"
-MAC="$(echo "$INFO" | grep -Eo '([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}' | tail -1 | tr '[:lower:]' '[:upper:]')"
-SIZE="$(echo "$INFO" | sed -nE 's/.*[Ff]lash size: *([0-9]+)MB.*/\1/p' | tail -1)"
+# ESP-IDF 5.5 bundles esptool v4; it uses underscore commands.
+# Print the actual probe error instead of hiding it.
+if ! INFO="$(python -m esptool --port "$PORT" flash_id 2>&1)"; then
+  printf '%s\n' "$INFO"
+  echo "FLASH_SKIPPED: ESP flash_id probe failed"
+  exit 0
+fi
+printf '%s\n' "$INFO" | grep -E 'Chip is |Chip type:|flash size:|MAC:' || true
+CHIP="$(printf '%s\n' "$INFO" | sed -nE 's/^Chip (is |type: )([^ (]+).*/\2/p' | head -1)"
+MAC="$(printf '%s\n' "$INFO" | grep -Eo '([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}' | tail -1 | tr '[:lower:]' '[:upper:]' || true)"
+SIZE="$(printf '%s\n' "$INFO" | sed -nE 's/.*[Ff]lash size: *([0-9]+)[[:space:]]*MB.*/\1/p' | tail -1)"
+if [[ -z "$CHIP" || -z "$MAC" || -z "$SIZE" ]]; then
+  echo "FLASH_SKIPPED: missing chip, MAC, or flash capacity; refusing to guess"
+  exit 0
+fi
 if [[ "$MAC" = "44:BD:8D:7A:B9:BC" || "$MAC" = "90:70:69:EB:1C:74" ]]; then
   echo "FLASH_SKIPPED: this is a protected unrelated device ($MAC)"; exit 0
 fi
@@ -29,7 +39,7 @@ chmod 700 "$HOME/halloween-dial-factory-backups"
 BACKUP="$HOME/halloween-dial-factory-backups/$MAC-$target-$GITHUB_RUN_ID.bin"
 if test -e "$BACKUP"; then echo "FLASH_SKIPPED: backup path exists"; exit 0; fi
 echo "Backing up the full, connected $target flash before changes."
-python -m esptool --port "$PORT" read-flash 0 "$length" "$BACKUP"
+python -m esptool --port "$PORT" read_flash 0 "$length" "$BACKUP"
 chmod 600 "$BACKUP"
 read_bytes="$(stat -c %s "$BACKUP")"
 expected=$((length))
