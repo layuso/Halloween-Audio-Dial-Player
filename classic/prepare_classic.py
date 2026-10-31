@@ -13,6 +13,27 @@ shutil.copy(Path(__file__).with_name('bridge.h'),dest/'main/bridge.h')
 main=dest/'main/main.c'
 s=main.read_text()
 s=s.replace('#include "esp_avrc_api.h"','#include "esp_avrc_api.h"\n#include "bridge.h"')
+# The original Espressif A2DP example configures its controller for BR/EDR-only.
+# Preserve that setting: without it the controller config defaults to BTDM,
+# but app_main enables CLASSIC_BT and fails with ESP_ERR_INVALID_ARG.
+needle='    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();'
+assert needle in s
+s=s.replace(needle,needle+'''\n    ESP_LOGI(BT_AV_TAG, "Bluetooth controller init mode=%d; requested Classic=%d",
+             (int)bt_cfg.mode, (int)ESP_BT_MODE_CLASSIC_BT);''',1)
+needle='''    if (esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT) != ESP_OK) {
+        ESP_LOGE(BT_AV_TAG, "%s enable controller failed", __func__);
+        return;
+    }'''
+assert needle in s
+s=s.replace(needle,'''    ret = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
+    if (ret != ESP_OK) {
+        ESP_LOGE(BT_AV_TAG, "Bluetooth controller enable failed: %s (0x%x); config mode=%d, requested=%d",
+                 esp_err_to_name(ret), (unsigned)ret, (int)bt_cfg.mode,
+                 (int)ESP_BT_MODE_CLASSIC_BT);
+        return;
+    }
+    ESP_LOGI(BT_AV_TAG, "Bluetooth Classic controller ENABLED");''',1)
+
 # The reference example rejects speakers without COD=RENDERING or a full EIR name.
 # Real A2DP sinks often advertise the name only in BDNAME; match both safely.
 scan_start=s.index('static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)\n{')
@@ -133,6 +154,12 @@ cm=cm.replace('"bt_app_core.c"','"bt_app_core.c" "bridge.c"')
 assert 'PRIV_REQUIRES bt nvs_flash' in cm
 cm=cm.replace('PRIV_REQUIRES bt nvs_flash', 'PRIV_REQUIRES bt nvs_flash esp_driver_uart esp_timer', 1)
 cmake.write_text(cm)
-(dest/'sdkconfig.defaults').write_text('CONFIG_EXAMPLE_PEER_DEVICE_NAME="ITSBO-513"\nCONFIG_BT_ENABLED=y\nCONFIG_BT_CLASSIC_ENABLED=y\nCONFIG_BT_BLUEDROID_ENABLED=y\nCONFIG_BT_A2DP_ENABLE=y\n')
+# Keep the upstream SDK defaults, especially its Classic-only controller mode.
+defaults=dest/'sdkconfig.defaults'
+config=defaults.read_text()
+if 'CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y' not in config:
+    sys.exit('Upstream A2DP example no longer requests BR/EDR-only; inspect its Kconfig')
+config+='\nCONFIG_EXAMPLE_PEER_DEVICE_NAME="ITSBO-513"\n'
+defaults.write_text(config)
 print('A2DP source prepared:',dest)
 print('IMPORTANT: Build for esp32 (NOT esp32s3); verify chip and backup before flashing.')
