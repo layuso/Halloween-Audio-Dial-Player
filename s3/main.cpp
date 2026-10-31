@@ -76,7 +76,12 @@ static uint64_t volume_changed_ms=0;
 static nvs_handle_t halloween_nvs;
 
 static uint64_t ms_now(){return (uint64_t)(esp_timer_get_time()/1000);}
-static void uart_cmd(uint8_t b){uart_write_bytes(LINK_UART,&b,1);}
+static bool uart_cmd(uint8_t b){
+    int queued=uart_write_bytes(LINK_UART,&b,1);
+    if(queued!=1) ESP_LOGE(TAG,"UART TX40 failed to queue command 0x%02X (return %d)",
+                           (unsigned)b,queued);
+    return queued==1;
+}
 static void volume_send(){const uint8_t buf[2]={'V',volume};uart_write_bytes(LINK_UART,buf,sizeof(buf));}
 static void settings_save(){nvs_set_u8(halloween_nvs,"interval",scheduler.mode);nvs_set_u8(halloween_nvs,"volume",volume);nvs_set_u8(halloween_nvs,"running",scheduler.enabled?1:0);nvs_commit(halloween_nvs);}
 static void adjust_volume(int delta){
@@ -110,13 +115,31 @@ static void knob_task(void*){
 }
 static void status_rx(void*){
     uint8_t b=0;
+    unsigned heartbeats=0, unexpected=0;
+    int64_t last_report_us=esp_timer_get_time();
     for(;;){
-        if(uart_read_bytes(LINK_UART,&b,1,pdMS_TO_TICKS(250))==1){
+        int received=uart_read_bytes(LINK_UART,&b,1,pdMS_TO_TICKS(250));
+        if(received==1){
             if(b=='C' || b=='D'){
                 bluetooth_connected=(b=='C');
                 last_link_rx_ms=ms_now();
                 if(bluetooth_connected) pair_requested=false;
+                heartbeats++;
+                if(heartbeats==1 || (heartbeats%30)==0)
+                    ESP_LOGI(TAG,"UART RX39 heartbeat #%u: %c (Bluetooth %s)",
+                             heartbeats,(char)b,b=='C'?"connected":"disconnected");
+            } else if(unexpected++ < 12){
+                ESP_LOGW(TAG,"UART RX39 unexpected byte 0x%02X (baud/pin/framing diagnostic)",
+                         (unsigned)b);
             }
+        }
+        int64_t now=esp_timer_get_time();
+        if(now-last_report_us >= 10000000){
+            bool online=last_link_rx_ms && ms_now()-last_link_rx_ms<3500;
+            if(!online)
+                ESP_LOGW(TAG,"UART RX39: no valid Classic heartbeat; GPIO39 level=%d, bytes seen=%u, valid heartbeats=%u",
+                         gpio_get_level((gpio_num_t)LINK_RX),unexpected,heartbeats);
+            last_report_us=now;
         }
     }
 }
@@ -292,8 +315,9 @@ static void on_pair(lv_event_t *evt){
     if(lv_event_get_code(evt)!=LV_EVENT_CLICKED)return;
     pair_requested=true;
     pair_request_ms=ms_now();
-    uart_cmd('P');
-    ESP_LOGI(TAG,"Pair command sent: place ITSBO-513 into pairing mode");
+    bool queued=uart_cmd('P');
+    ESP_LOGI(TAG,"PAIR command %s on UART TX40; physical delivery not yet confirmed",
+             queued?"queued":"FAILED");
 }
 static void ui_refresh(lv_timer_t*){
     uint64_t now=ms_now();
@@ -314,12 +338,14 @@ static void ui_refresh(lv_timer_t*){
     if(!card_ready && !flash_audio_ready) snprintf(buf,sizeof(buf),"%s",sd_state);
     else if(scheduler.playing) snprintf(buf,sizeof(buf),"PLAYING SOUND");
     else if(!scheduler.enabled) snprintf(buf,sizeof(buf),"SCHEDULE PAUSED");
+    else if(!link_ready) snprintf(buf,sizeof(buf),
+             card_ready?"SD AUDIO READY - CHECK LINK":"MP3 READY - CHECK LINK");
     else if(!bluetooth_connected) snprintf(buf,sizeof(buf),
-             card_ready?"WAITING FOR SPEAKER":"FLASH AUDIO - PAIR SPEAKER");
+             "AUDIO READY - PAIR SPEAKER");
     else if(scheduler.due_ms>now)
         snprintf(buf,sizeof(buf),"NEXT SOUND IN %llus",
                  (unsigned long long)((scheduler.due_ms-now+999)/1000));
-    else snprintf(buf,sizeof(buf),card_ready?"READY TO PLAY":"FLASH AUDIO READY");
+    else snprintf(buf,sizeof(buf),card_ready?"SD AUDIO READY":"EMBEDDED MP3 READY");
     lv_label_set_text(countdown_label,buf);
 }
 static lv_obj_t *make_button(lv_obj_t *parent,const char *caption,int x,int y,int w,int h,
