@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -27,6 +28,7 @@
 #include "audio_player.h"
 #include "display_init.h"
 #include "scheduler.h"
+#include "user_encoder_bsp.h"
 
 static const char *TAG="HalloweenDial";
 static const char *TRACK="/sdcard/Witches_Sound_cleaned_louder.mp3";
@@ -35,9 +37,11 @@ extern "C" const uint8_t _binary_Witches_Sound_cleaned_louder_mp3_start[];
 extern "C" const uint8_t _binary_Witches_Sound_cleaned_louder_mp3_end[];
 static constexpr uart_port_t LINK_UART=UART_NUM_1;
 static constexpr int LINK_TX=40, LINK_RX=39;
-static constexpr int KNOB_UP=8, KNOB_DOWN=7;
 static halloween_scheduler_t scheduler={.mode=4,.enabled=true,.playing=false,.due_ms=0};
 static volatile bool bluetooth_connected=false;
+static volatile uint64_t last_link_rx_ms=0;
+static volatile bool pair_requested=false;
+static uint64_t pair_request_ms=0;
 static bool card_ready=false;
 static uint8_t volume=65;
 static uint32_t audio_rate=48000;
@@ -45,6 +49,9 @@ static uint32_t resample_accum=0;
 static int64_t stream_start_us=0;
 static uint64_t samples_sent=0;
 static lv_obj_t *status_label=nullptr,*mode_label=nullptr,*play_button_label=nullptr,*volume_label=nullptr;
+static lv_obj_t *pair_button_label=nullptr,*countdown_label=nullptr,*sound_label=nullptr;
+static volatile bool volume_dirty=false;
+static uint64_t volume_changed_ms=0;
 static nvs_handle_t halloween_nvs;
 
 static uint64_t ms_now(){return (uint64_t)(esp_timer_get_time()/1000);}
@@ -56,31 +63,39 @@ static void adjust_volume(int delta){
     if (v < 0) v = 0;
     if (v > 100) v = 100;
     volume=(uint8_t)v;
-    volume_send();settings_save();
+    volume_send();
+    volume_dirty=true;
+    volume_changed_ms=ms_now();
     ESP_LOGI(TAG,"volume=%u",(unsigned)volume);
 }
+/* Use the board's encoder BSP (3 ms sampling + per-channel debounce).
+ * GPIO8 is right/volume+, GPIO7 is left/volume-. The old direct falling-edge
+ * handler missed some counterclockwise detents and wrote NVS on every pulse. */
 static void knob_task(void*){
-    gpio_config_t cfg={};cfg.pin_bit_mask=(1ULL<<KNOB_UP)|(1ULL<<KNOB_DOWN);
-    cfg.mode=GPIO_MODE_INPUT;cfg.pull_up_en=GPIO_PULLUP_ENABLE;
-    ESP_ERROR_CHECK(gpio_config(&cfg));
-    bool last_up=true,last_down=true;
-    uint64_t up_at=0,down_at=0;
+    user_encoder_init();
+    ESP_LOGI(TAG,"Waveshare rotary encoder active (right/up, left/down)");
     for(;;){
-        bool up=(gpio_get_level((gpio_num_t)KNOB_UP)!=0);
-        bool down=(gpio_get_level((gpio_num_t)KNOB_DOWN)!=0);
-        uint64_t now=ms_now();
-        if(!up&&last_up&&now-up_at>25){adjust_volume(+2);up_at=now;}
-        if(!down&&last_down&&now-down_at>25){adjust_volume(-2);down_at=now;}
-        last_up=up;last_down=down;
-        vTaskDelay(pdMS_TO_TICKS(3));
+        EventBits_t events=xEventGroupWaitBits(knob_even_, BIT0 | BIT1,
+                                               pdTRUE,pdFALSE,pdMS_TO_TICKS(50));
+        if((events & BIT0) && !(events & BIT1)) adjust_volume(-2);
+        else if((events & BIT1) && !(events & BIT0)) adjust_volume(+2);
+        else if((events & (BIT0|BIT1))==(BIT0|BIT1))
+            ESP_LOGW(TAG,"Both rotary directions reported in one interval");
+        if(volume_dirty && ms_now()-volume_changed_ms>600){
+            volume_dirty=false;
+            settings_save();
+        }
     }
 }
 static void status_rx(void*){
     uint8_t b=0;
     for(;;){
         if(uart_read_bytes(LINK_UART,&b,1,pdMS_TO_TICKS(250))==1){
-            if(b=='C')bluetooth_connected=true;
-            else if(b=='D')bluetooth_connected=false;
+            if(b=='C' || b=='D'){
+                bluetooth_connected=(b=='C');
+                last_link_rx_ms=ms_now();
+                if(bluetooth_connected) pair_requested=false;
+            }
         }
     }
 }
@@ -224,35 +239,100 @@ static void on_interval(lv_event_t *evt){
     ESP_LOGI(TAG,"Interval %s",mode_text());
 }
 static void on_pair(lv_event_t *evt){
-    if(lv_event_get_code(evt)==LV_EVENT_CLICKED){uart_cmd('P');ESP_LOGI(TAG,"Pair requested: ITSBO-513");}
+    if(lv_event_get_code(evt)!=LV_EVENT_CLICKED)return;
+    pair_requested=true;
+    pair_request_ms=ms_now();
+    uart_cmd('P');
+    ESP_LOGI(TAG,"Pair command sent: place ITSBO-513 into pairing mode");
 }
 static void ui_refresh(lv_timer_t*){
-    static char buf[64];
-    lv_label_set_text(status_label,bluetooth_connected?"ITSBO-513  CONNECTED":"ITSBO-513  DISCONNECTED");
+    uint64_t now=ms_now();
+    bool link_ready=last_link_rx_ms && now-last_link_rx_ms<3500;
+    lv_label_set_text(status_label,!link_ready?"LINK OFFLINE":
+                      bluetooth_connected?"SPEAKER CONNECTED":
+                      pair_requested && now-pair_request_ms<15000?"SEARCHING FOR SPEAKER":
+                      "SPEAKER NOT CONNECTED");
+    lv_obj_set_style_text_color(status_label,
+        lv_color_hex(!link_ready?0xEAA44A:bluetooth_connected?0x8EE2B8:0xF1BB74),0);
+    if(pair_requested && now-pair_request_ms>15000)pair_requested=false;
     lv_label_set_text(mode_label,mode_text());
-    lv_label_set_text(play_button_label,scheduler.enabled?"PAUSE":"PLAY");
-    snprintf(buf,sizeof(buf),"VOLUME %u%%",(unsigned)volume);lv_label_set_text(volume_label,buf);
+    lv_label_set_text(play_button_label,scheduler.enabled?"PAUSE":"START");
+    lv_label_set_text(pair_button_label,bluetooth_connected?"REPAIR":"PAIR");
+    char buf[64];
+    snprintf(buf,sizeof(buf),"VOLUME  %u%%",(unsigned)volume);
+    lv_label_set_text(volume_label,buf);
+    if(!card_ready) snprintf(buf,sizeof(buf),"SD CARD UNAVAILABLE");
+    else if(scheduler.playing) snprintf(buf,sizeof(buf),"PLAYING SOUND");
+    else if(!scheduler.enabled) snprintf(buf,sizeof(buf),"SCHEDULE PAUSED");
+    else if(!bluetooth_connected) snprintf(buf,sizeof(buf),"WAITING FOR SPEAKER");
+    else if(scheduler.due_ms>now)
+        snprintf(buf,sizeof(buf),"NEXT SOUND IN %llus",
+                 (unsigned long long)((scheduler.due_ms-now+999)/1000));
+    else snprintf(buf,sizeof(buf),"READY TO PLAY");
+    lv_label_set_text(countdown_label,buf);
 }
-static lv_obj_t *make_button(lv_obj_t *parent,const char *caption,int x,int y,int w,int h,lv_event_cb_t cb){
+static lv_obj_t *make_button(lv_obj_t *parent,const char *caption,int x,int y,int w,int h,
+                              uint32_t bg,uint32_t border,lv_event_cb_t cb,bool primary){
     lv_obj_t *button=lv_btn_create(parent);
-    lv_obj_set_size(button,w,h);lv_obj_set_pos(button,x,y);
-    lv_obj_set_style_radius(button,LV_RADIUS_CIRCLE,0);
+    lv_obj_set_size(button,w,h);
+    lv_obj_set_pos(button,x,y);
+    lv_obj_set_style_radius(button,primary?48:23,0);
+    lv_obj_set_style_bg_color(button,lv_color_hex(bg),0);
+    lv_obj_set_style_bg_opa(button,LV_OPA_COVER,0);
+    lv_obj_set_style_border_width(button,1,0);
+    lv_obj_set_style_border_color(button,lv_color_hex(border),0);
+    lv_obj_set_style_border_opa(button,LV_OPA_COVER,0);
+    lv_obj_set_style_shadow_color(button,lv_color_hex(primary?0xE67622:0x37264E),0);
+    lv_obj_set_style_shadow_width(button,primary?15:5,0);
+    lv_obj_set_style_shadow_opa(button,primary?LV_OPA_40:LV_OPA_20,0);
+    lv_obj_set_style_pad_all(button,0,0);
     lv_obj_add_event_cb(button,cb,LV_EVENT_CLICKED,nullptr);
-    lv_obj_t *label=lv_label_create(button);lv_label_set_text(label,caption);
-    lv_obj_center(label);return label;
+    lv_obj_t *label=lv_label_create(button);
+    lv_label_set_text(label,caption);
+    lv_obj_set_style_text_color(label,lv_color_hex(primary?0x120E15:0xF1EBFF),0);
+    lv_obj_set_style_text_letter_space(label,primary?3:1,0);
+    lv_obj_center(label);
+    return label;
 }
 static void ui_create(){
     lv_obj_t *root=lv_scr_act();
-    lv_obj_set_style_bg_color(root,lv_color_hex(0x101A24),0);
-    lv_obj_t *title=lv_label_create(root);lv_label_set_text(title,"HALLOWEEN");
-    lv_obj_set_style_text_color(title,lv_color_hex(0xDFAC73),0);
-    lv_obj_align(title,LV_ALIGN_TOP_MID,0,37);
-    status_label=lv_label_create(root);lv_obj_align(status_label,LV_ALIGN_TOP_MID,0,72);
-    play_button_label=make_button(root,"PAUSE",108,104,144,80,on_toggle);
-    mode_label=make_button(root,"RANDOM",61,203,112,51,on_interval);
-    make_button(root,"PAIR",189,203,112,51,on_pair);
-    volume_label=lv_label_create(root);lv_obj_align(volume_label,LV_ALIGN_BOTTOM_MID,0,-52);
-    lv_timer_create(ui_refresh,200,nullptr);ui_refresh(nullptr);
+    lv_obj_set_style_bg_color(root,lv_color_hex(0x0B0B10),0);
+    lv_obj_set_style_bg_opa(root,LV_OPA_COVER,0);
+    lv_obj_set_style_border_width(root,0,0);
+    lv_obj_set_style_radius(root,0,0);
+    lv_obj_clear_flag(root,LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title=lv_label_create(root);
+    lv_label_set_text(title,"H A L L O W E E N");
+    lv_obj_set_style_text_color(title,lv_color_hex(0xFFAD62),0);
+    lv_obj_align(title,LV_ALIGN_TOP_MID,0,31);
+
+    lv_obj_t *subtitle=lv_label_create(root);
+    lv_label_set_text(subtitle,"SOUND MACHINE");
+    lv_obj_set_style_text_color(subtitle,lv_color_hex(0x9C91AE),0);
+    lv_obj_set_style_text_letter_space(subtitle,2,0);
+    lv_obj_align(subtitle,LV_ALIGN_TOP_MID,0,58);
+
+    status_label=lv_label_create(root);
+    lv_obj_align(status_label,LV_ALIGN_TOP_MID,0,87);
+
+    play_button_label=make_button(root,"PAUSE",100,117,160,83,
+                                  0xF18A30,0xFFC184,on_toggle,true);
+    mode_label=make_button(root,"RANDOM",44,217,132,51,
+                           0x322343,0x7E538B,on_interval,false);
+    pair_button_label=make_button(root,"PAIR",184,217,132,51,
+                                  0x322343,0x7E538B,on_pair,false);
+
+    volume_label=lv_label_create(root);
+    lv_obj_set_style_text_color(volume_label,lv_color_hex(0xF2E9FD),0);
+    lv_obj_set_style_text_letter_space(volume_label,1,0);
+    lv_obj_align(volume_label,LV_ALIGN_TOP_MID,0,283);
+
+    countdown_label=lv_label_create(root);
+    lv_obj_set_style_text_color(countdown_label,lv_color_hex(0xB5AAC6),0);
+    lv_obj_align(countdown_label,LV_ALIGN_TOP_MID,0,311);
+    lv_timer_create(ui_refresh,200,nullptr);
+    ui_refresh(nullptr);
 }
 extern "C" void app_main(void){
     ESP_ERROR_CHECK(nvs_flash_init());
