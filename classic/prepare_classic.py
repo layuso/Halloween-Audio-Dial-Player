@@ -15,8 +15,8 @@ s=main.read_text()
 s=s.replace('#include "esp_avrc_api.h"','#include "esp_avrc_api.h"\n#include "bridge.h"')
 # The reference example rejects speakers without COD=RENDERING or a full EIR name.
 # Real A2DP sinks often advertise the name only in BDNAME; match both safely.
-scan_start=s.index('static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)\\n{')
-scan_end=s.index('static void bt_app_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)\\n{',scan_start)
+scan_start=s.index('static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)\n{')
+scan_end=s.index('static void bt_app_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)\n{',scan_start)
 s=s[:scan_start]+'''static void filter_inquiry_scan_result(esp_bt_gap_cb_param_t *param)
 {
     char addr[18] = {0};
@@ -71,7 +71,7 @@ s=s.replace('static const char remote_device_name[] = CONFIG_EXAMPLE_PEER_DEVICE
 '''static const char remote_device_name[] = CONFIG_EXAMPLE_PEER_DEVICE_NAME;
 static bool s_repair_after_disconnect = false;
 ''',1)
-needle='static void bt_app_a2d_heart_beat(TimerHandle_t arg)\\n{'
+needle='static void bt_app_a2d_heart_beat(TimerHandle_t arg)\n{'
 assert needle in s
 s=s.replace(needle,'''static void bt_app_repair_hdlr(uint16_t event, void *arg)
 {
@@ -101,7 +101,7 @@ s=s[:start]+'''    case APP_AV_MEDIA_STATE_STARTED: {
     }
 '''+s[end:]
 # Once disconnect completes, resume discovery if user pressed REPAIR.
-start=s.index('static void bt_app_av_state_disconnecting_hdlr(uint16_t event, void *param)\\n{')
+start=s.index('static void bt_app_av_state_disconnecting_hdlr(uint16_t event, void *param)\n{')
 loc=s.index('s_a2d_state =  APP_AV_STATE_UNCONNECTED;',start)
 s=s[:loc]+'''s_a2d_state = APP_AV_STATE_UNCONNECTED;
             if (s_repair_after_disconnect) {
@@ -112,6 +112,10 @@ s=s[:loc]+'''s_a2d_state = APP_AV_STATE_UNCONNECTED;
 # A headless speaker cannot respond to an ESP32 display/keyboard SSP flow.
 s=s.replace('esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_IO;',
             'esp_bt_io_cap_t iocap = ESP_BT_IO_CAP_NONE;')
+# A two-second heartbeat responds to PAIR quickly; keep connecting timeout ~20s.
+s=s.replace('(10000 / portTICK_PERIOD_MS)', '(2000 / portTICK_PERIOD_MS)')
+s=s.replace('if (++s_connecting_intv >= 2)', 'if (++s_connecting_intv >= 10)')
+
 
 needle='    bt_app_task_start_up();'
 assert needle in s
