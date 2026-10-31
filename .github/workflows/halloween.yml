@@ -1,20 +1,18 @@
 name: Halloween Dial - Build and Flash
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/halloween.yml'
-      - 'scripts/**'
-      - 'common/**'
-      - 'classic/**'
-      - 's3/**'
   workflow_dispatch:
+    inputs:
+      flash:
+        description: 'Flash connected MCU only after backups and chip verification'
+        required: true
+        type: boolean
+        default: false
 permissions:
   contents: read
   issues: write
 concurrency:
   group: halloween-dial-hardware
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   build:
     if: github.repository == 'layuso/Halloween-Audio-Dial-Player' && github.ref == 'refs/heads/main'
@@ -29,9 +27,18 @@ jobs:
         id: build
         shell: bash
         env:
-          HALLOWEEN_AUTO_FLASH: '1'
+          IDF_PATH: /home/layuso/esp/esp-idf
+          IDF_TOOLS_PATH: /home/layuso/.espressif
+          HALLOWEEN_AUTO_FLASH: ${{ inputs.flash && '1' || '0' }}
         run: |
+          set -e
           set -o pipefail
+          unset IDF_PYTHON_ENV_PATH
+          test -f "$IDF_PATH/export.sh" || { echo "::error::Missing $IDF_PATH/export.sh"; exit 1; }
+          set +u
+          source "$IDF_PATH/export.sh"
+          set -u
+          idf.py --version
           bash scripts/ci_build.sh 2>&1 | tee "$RUNNER_TEMP/halloween-ci.log"
       - name: Upload build artifacts
         if: success()
