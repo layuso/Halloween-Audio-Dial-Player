@@ -16,7 +16,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
-#include "driver/sdspi_host.h"
+#include "driver/sdmmc_host.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "esp_timer.h"
@@ -62,6 +62,7 @@ static volatile uint64_t last_link_rx_ms=0;
 static volatile bool pair_requested=false;
 static uint64_t pair_request_ms=0;
 static bool card_ready=false;
+static const char *sd_state="SD NOT INITIALIZED";
 static uint8_t volume=65;
 static uint32_t audio_rate=48000;
 static uint32_t resample_accum=0;
@@ -149,37 +150,56 @@ static bool verify_or_provision_track() {
         }
         if (matches && fgetc(existing)!=EOF)matches=false;
         fclose(existing);
-        if (matches) {ESP_LOGI(TAG,"SD MP3 matches built-in asset: %u bytes",(unsigned)expected);return true;}
+        if (matches) {sd_state="SD AUDIO READY";ESP_LOGI(TAG,"SD MP3 matches built-in asset: %u bytes",(unsigned)expected);return true;}
         ESP_LOGE(TAG,"Different MP3 already exists: refusing to overwrite %s",TRACK);
+        sd_state="AUDIO FILE DIFFERS";
         return false;
     }
     /* Write to a temporary path; only rename after complete and sync. */
     static const char *temp="/sdcard/.witches_provision.tmp";
     FILE *out=fopen(temp,"wb");
-    if(!out){ESP_LOGE(TAG,"Cannot create SD audio file");return false;}
+    if(!out){sd_state="SD AUDIO WRITE FAILED";ESP_LOGE(TAG,"Cannot create SD audio file");return false;}
     bool ok=fwrite(first,1,expected,out)==expected;
     ok=(fflush(out)==0)&&ok;
     ok=(fsync(fileno(out))==0)&&ok;
     ok=(fclose(out)==0)&&ok;
-    if (!ok) {remove(temp);ESP_LOGE(TAG,"Failed writing SD MP3");return false;}
-    if(rename(temp,TRACK)!=0){remove(temp);ESP_LOGE(TAG,"Failed to finalize SD MP3");return false;}
+    if (!ok) {remove(temp);sd_state="SD AUDIO WRITE FAILED";ESP_LOGE(TAG,"Failed writing SD MP3");return false;}
+    if(rename(temp,TRACK)!=0){remove(temp);sd_state="SD AUDIO RENAME FAILED";ESP_LOGE(TAG,"Failed to finalize SD MP3");return false;}
+    sd_state="SD AUDIO READY";
     ESP_LOGI(TAG,"Provisioned %s (%u bytes)",TRACK,(unsigned)expected);
     return true;
 }
 static bool sd_mount(){
-    spi_bus_config_t spi={};spi.mosi_io_num=3;spi.miso_io_num=5;spi.sclk_io_num=4;
-    spi.quadwp_io_num=-1;spi.quadhd_io_num=-1;spi.max_transfer_sz=4096;
-    sdmmc_host_t host=SDSPI_HOST_DEFAULT();
-    host.slot=SPI3_HOST; // LCD driver owns SPI2_HOST
-    ESP_ERROR_CHECK(spi_bus_initialize((spi_host_device_t)host.slot,&spi,SPI_DMA_CH_AUTO));
-    sdspi_device_config_t device=SDSPI_DEVICE_CONFIG_DEFAULT();
-    device.gpio_cs=GPIO_NUM_2;device.host_id=(spi_host_device_t)host.slot;
-    esp_vfs_fat_mount_config_t m={};m.format_if_mount_failed=false;
-    m.max_files=4;m.allocation_unit_size=16*1024;
+    /* Waveshare ESP32-S3-Knob-Touch-LCD-1.8 TF slot is wired for SDMMC:
+       CLK=4 CMD=3 D0=5 D1=6 D2=42 D3=2.
+       The old SDSPI initialization was unreliable on this board. */
+    sdmmc_host_t host=SDMMC_HOST_DEFAULT();
+    host.max_freq_khz=SDMMC_FREQ_DEFAULT; // 20 MHz; prioritize reliable startup
+    sdmmc_slot_config_t slot=SDMMC_SLOT_CONFIG_DEFAULT();
+    slot.width=4;
+    slot.clk=GPIO_NUM_4;
+    slot.cmd=GPIO_NUM_3;
+    slot.d0=GPIO_NUM_5;
+    slot.d1=GPIO_NUM_6;
+    slot.d2=GPIO_NUM_42;
+    slot.d3=GPIO_NUM_2;
+    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    esp_vfs_fat_mount_config_t m={};
+    m.format_if_mount_failed=false; // Never format or erase user's SD card.
+    m.max_files=4;
+    m.allocation_unit_size=16*1024;
     sdmmc_card_t *card=nullptr;
-    esp_err_t rc=esp_vfs_fat_sdspi_mount("/sdcard",&host,&device,&m,&card);
-    if(rc!=ESP_OK){ESP_LOGE(TAG,"SD mount failed %s (card must be FAT32, not exFAT)",esp_err_to_name(rc));return false;}
-    ESP_LOGI(TAG,"SD mounted; verifying audio file");
+    ESP_LOGI(TAG,"Mounting TF card: SDMMC 4-bit CLK4 CMD3 D0=5 D1=6 D2=42 D3=2");
+    esp_err_t rc=esp_vfs_fat_sdmmc_mount("/sdcard",&host,&slot,&m,&card);
+    if(rc!=ESP_OK){
+        sd_state="SD MOUNT FAILED";
+        ESP_LOGE(TAG,"SDMMC mount failed: %s (0x%x); check card insertion and FAT32 format",
+                 esp_err_to_name(rc),(unsigned)rc);
+        return false;
+    }
+    ESP_LOGI(TAG,"SDMMC card mounted");
+    sdmmc_card_print_info(stdout,card);
+    sd_state="AUDIO FILE UNAVAILABLE";
     return verify_or_provision_track();
 }
 static esp_err_t set_audio_clock(uint32_t rate,uint32_t bits_cfg,i2s_slot_mode_t channels){
@@ -280,7 +300,7 @@ static void ui_refresh(lv_timer_t*){
     char buf[64];
     snprintf(buf,sizeof(buf),"VOLUME  %u%%",(unsigned)volume);
     lv_label_set_text(volume_label,buf);
-    if(!card_ready) snprintf(buf,sizeof(buf),"SD CARD UNAVAILABLE");
+    if(!card_ready) snprintf(buf,sizeof(buf),"%s",sd_state);
     else if(scheduler.playing) snprintf(buf,sizeof(buf),"PLAYING SOUND");
     else if(!scheduler.enabled) snprintf(buf,sizeof(buf),"SCHEDULE PAUSED");
     else if(!bluetooth_connected) snprintf(buf,sizeof(buf),"WAITING FOR SPEAKER");
