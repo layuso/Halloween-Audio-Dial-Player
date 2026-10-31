@@ -28,7 +28,9 @@
 #include "audio_player.h"
 #include "display_init.h"
 #include "scheduler.h"
+extern "C" {
 #include "user_encoder_bsp.h"
+}
 
 static const char *TAG="HalloweenDial";
 static const char *TRACK="/sdcard/Witches_Sound_cleaned_louder.mp3";
