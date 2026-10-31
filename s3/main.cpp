@@ -62,6 +62,7 @@ static volatile uint64_t last_link_rx_ms=0;
 static volatile bool pair_requested=false;
 static uint64_t pair_request_ms=0;
 static bool card_ready=false;
+static bool flash_audio_ready=false;
 static const char *sd_state="SD NOT INITIALIZED";
 static uint8_t volume=65;
 static uint32_t audio_rate=48000;
@@ -252,13 +253,23 @@ static void player_events(audio_player_cb_ctx_t *ctx){
     }
 }
 static bool play_file(){
-    if(!bluetooth_connected||!card_ready)return false;
-    FILE *f=fopen(TRACK,"rb");if(!f)return false;
+    if(!bluetooth_connected || (!card_ready && !flash_audio_ready)) return false;
+    FILE *f=card_ready ? fopen(TRACK,"rb") : nullptr;
+    bool from_flash=(f==nullptr);
+    if(from_flash && flash_audio_ready) {
+        /* The MP3 is already linked into S3 application flash. A read-only
+           memory FILE avoids making sound effects depend on a removable SD. */
+        const uint8_t *first=_binary_Witches_Sound_cleaned_louder_mp3_start;
+        const size_t length=(size_t)(_binary_Witches_Sound_cleaned_louder_mp3_end-first);
+        f=fmemopen((void*)first,length,"rb");
+        if(!f) ESP_LOGE(TAG,"Cannot open embedded audio stream (fmemopen)");
+    }
+    if(!f) return false;
     uart_cmd('S');resample_accum=0;samples_sent=0;stream_start_us=esp_timer_get_time();
     scheduler.playing=true;scheduler.due_ms=0;
     esp_err_t rc=audio_player_play(f);
     if(rc!=ESP_OK){fclose(f);scheduler.playing=false;uart_cmd('X');return false;}
-    ESP_LOGI(TAG,"Playing %s",TRACK);
+    ESP_LOGI(TAG,"Playing Halloween MP3 from %s",from_flash?"embedded flash":"SD card");
     return true;
 }
 static const char *mode_text(){
@@ -300,14 +311,15 @@ static void ui_refresh(lv_timer_t*){
     char buf[64];
     snprintf(buf,sizeof(buf),"VOLUME  %u%%",(unsigned)volume);
     lv_label_set_text(volume_label,buf);
-    if(!card_ready) snprintf(buf,sizeof(buf),"%s",sd_state);
+    if(!card_ready && !flash_audio_ready) snprintf(buf,sizeof(buf),"%s",sd_state);
     else if(scheduler.playing) snprintf(buf,sizeof(buf),"PLAYING SOUND");
     else if(!scheduler.enabled) snprintf(buf,sizeof(buf),"SCHEDULE PAUSED");
-    else if(!bluetooth_connected) snprintf(buf,sizeof(buf),"WAITING FOR SPEAKER");
+    else if(!bluetooth_connected) snprintf(buf,sizeof(buf),
+             card_ready?"WAITING FOR SPEAKER":"FLASH AUDIO - PAIR SPEAKER");
     else if(scheduler.due_ms>now)
         snprintf(buf,sizeof(buf),"NEXT SOUND IN %llus",
                  (unsigned long long)((scheduler.due_ms-now+999)/1000));
-    else snprintf(buf,sizeof(buf),"READY TO PLAY");
+    else snprintf(buf,sizeof(buf),card_ready?"READY TO PLAY":"FLASH AUDIO READY");
     lv_label_set_text(countdown_label,buf);
 }
 static lv_obj_t *make_button(lv_obj_t *parent,const char *caption,int x,int y,int w,int h,
@@ -381,7 +393,17 @@ extern "C" void app_main(void){
     nvs_get_u8(halloween_nvs,"interval",&scheduler.mode);if(scheduler.mode>4)scheduler.mode=4;
     nvs_get_u8(halloween_nvs,"volume",&volume);if(volume>100)volume=65;
     uint8_t enabled=1;nvs_get_u8(halloween_nvs,"running",&enabled);scheduler.enabled=enabled!=0;
+    /* Verify the embedded MP3 before trying the removable SD card.
+       A failing SD mount must not disable the sound machine. */
+    const size_t asset_size=(size_t)(
+        _binary_Witches_Sound_cleaned_louder_mp3_end-
+        _binary_Witches_Sound_cleaned_louder_mp3_start);
+    flash_audio_ready=(asset_size>=100 && asset_size<=1024*1024);
+    ESP_LOGI(TAG,"Embedded Halloween MP3: %u bytes (%s)",
+             (unsigned)asset_size,flash_audio_ready?"READY":"INVALID");
     link_init();volume_send();card_ready=sd_mount();
+    if(!card_ready && flash_audio_ready)
+        ESP_LOGW(TAG,"SD unavailable (%s); playing from embedded flash instead",sd_state);
     audio_player_config_t ap={};
     ap.mute_fn=amp_noop;ap.clk_set_fn=set_audio_clock;ap.write_fn=pcm_uart_write;
     ap.priority=5;ap.coreID=1;
