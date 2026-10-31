@@ -75,9 +75,18 @@ printf '%s\n' "$INFO" | grep -E 'Chip is |Chip type:|Detected flash size:|MAC:' 
 CHIP="$(printf '%s\n' "$INFO" | sed -nE 's/^Chip (is |type: )([^ (]+).*/\2/p' | head -1)"
 MAC="$(printf '%s\n' "$INFO" | grep -Eo '([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}' | tail -1 | tr '[:lower:]' '[:upper:]' || true)"
 SIZE="$(printf '%s\n' "$INFO" | sed -nE 's/.*[Ff]lash size: *([0-9]+)[[:space:]]*MB.*/\1/p' | tail -1)"
-if [[ "$MAC" == "44:BD:8D:7A:B9:BC" || "$MAC" == "90:70:69:EB:1C:74" ]]; then
-  echo "STOP: protected Waymarker device, no flash"
+# The user has explicitly repurposed the previous WaymarkerOS S3 for Halloween.
+# Allow ONLY this exact MAC, with an explicit invocation flag, not a broad bypass.
+if [[ "$MAC" == "90:70:69:EB:1C:74" ]]; then
+  echo "STOP: unrelated protected Waymarker device; no flash"
   exit 1
+fi
+if [[ "$MAC" == "44:BD:8D:7A:B9:BC" ]]; then
+  if [[ "${HALLOWEEN_REPURPOSE_S3:-0}" != "1" || "$CHIP" != ESP32-S3* || "$SIZE" != 16 ]]; then
+    echo "STOP: former WaymarkerOS S3; set HALLOWEEN_REPURPOSE_S3=1 for explicitly authorized repurposing"
+    exit 1
+  fi
+  echo "AUTHORIZED: repurposing ESP32-S3 44:BD:8D:7A:B9:BC as Halloween Dial"
 fi
 if [[ "$CHIP" == ESP32-S3* && "$SIZE" == 16 && -n "$MAC" ]]; then
   TARGET=s3
