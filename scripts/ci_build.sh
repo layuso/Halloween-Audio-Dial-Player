@@ -9,8 +9,14 @@ MP3="/home/layuso/Witches_Sound_cleaned_louder.mp3"
 test -r "$MP3" || { echo "::error::Cannot read MP3 at $MP3"; exit 1; }
 export HALLOWEEN_MP3="$MP3"
 file "$MP3"; sha256sum "$MP3"
-IDF_SCRIPT="$(find /home /opt -maxdepth 7 -type f -path '*/esp-idf/export.sh' -print -quit 2>/dev/null || true)"
-test -f "$IDF_SCRIPT" || { echo "::error::ESP-IDF export.sh not found"; exit 1; }
+echo "ESP-IDF lookup starting"
+echo "ESP-IDF candidates:"
+find /home /opt /usr/local -maxdepth 11 -type f \( -name export.sh -o -name idf.py \) -print 2>/dev/null | grep -Ei '/(esp|idf)' | head -30 || true
+IDF_SCRIPT="$(find /home /opt /usr/local -maxdepth 11 -type f -name export.sh -print 2>/dev/null | grep -Ei '/(esp|idf)' | head -1 || true)"
+if [[ ! -f "$IDF_SCRIPT" ]]; then
+  echo "::error::ESP-IDF export.sh not found; inspect candidate paths above"
+  exit 1
+fi
 set +u
 source "$IDF_SCRIPT"
 set -u
