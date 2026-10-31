@@ -18,14 +18,13 @@ ui_cmake=base/'components/ui/CMakeLists.txt'
 if ui_cmake.exists(): ui_cmake.rename(ui_cmake.with_name('CMakeLists.txt.disabled'))
 shutil.copy(target,target.with_suffix('.cpp.original'))
 shutil.copy(source/'s3/main.cpp',target)
-# The upstream SH8601 init requests DISPLAY_INVERSION_ON (0x21), which
-# produces an inverted, pale screen on this dial revision. Turn it off (0x20).
+# Preserve the upstream SH8601 0x21 panel inversion setting. The OLED
+# hardware needs this setting for LVGL black to appear black; switching to
+# 0x20 produced the photographed white background and inverted UI palette.
 panel=base/'main/display_init.cpp'
 panel_src=panel.read_text()
 invert_on='{0x21, (uint8_t[]){0x00}, 1, 0},'
-invert_off='{0x20, (uint8_t[]){0x00}, 1, 0},'
-if panel_src.count(invert_on)!=1:sys.exit('Unexpected display inversion command; stop and inspect panel init')
-panel.write_text(panel_src.replace(invert_on,invert_off,1))
+if panel_src.count(invert_on)!=1:sys.exit('Unexpected SH8601 inversion config; stop and inspect panel init')
 
 shutil.copy(mp3,base/'main/Witches_Sound_cleaned_louder.mp3')
 shutil.copy(source/'common/scheduler.h',base/'main/scheduler.h')
