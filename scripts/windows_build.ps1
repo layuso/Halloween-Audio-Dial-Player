@@ -62,6 +62,18 @@ if ($Target -in @("s3","both")) {
     if (-not (Test-Path (Join-Path $s3 ".halloween-injected"))) {
         Invoke-Required { python (Join-Path $repo "s3\prepare_s3.py") $s3 }
     }
+    # Keep existing Windows S3 builds in sync with current firmware.
+    Copy-Item (Join-Path $repo "s3\main.cpp") (Join-Path $s3 "main\main.cpp") -Force
+    $panelPath = Join-Path $s3 "main\display_init.cpp"
+    $panelSrc = Get-Content $panelPath -Raw
+    $correct = '{0x21, (uint8_t[]){0x00}, 1, 0},'
+    $wrong = '{0x20, (uint8_t[]){0x00}, 1, 0},'
+    if ($panelSrc.Contains($wrong)) {
+        $panelSrc = $panelSrc.Replace($wrong, $correct)
+        [System.IO.File]::WriteAllText($panelPath, $panelSrc)
+    } elseif (-not $panelSrc.Contains($correct)) {
+        throw "Unknown SH8601 panel inversion command. Refusing S3 build."
+    }
     Push-Location $s3
     try {
         if (-not (Test-Path "sdkconfig")) {
