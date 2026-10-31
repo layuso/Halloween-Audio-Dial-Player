@@ -32,6 +32,23 @@ extern "C" {
 #include "user_encoder_bsp.h"
 }
 
+/* The larger fonts are enabled via LVGL Kconfig where available. */
+static const lv_font_t *font_heading(){
+#if LV_FONT_MONTSERRAT_20
+    return &lv_font_montserrat_20;
+#else
+    return LV_FONT_DEFAULT;
+#endif
+}
+static const lv_font_t *font_action(){
+#if LV_FONT_MONTSERRAT_24
+    return &lv_font_montserrat_24;
+#elif LV_FONT_MONTSERRAT_20
+    return &lv_font_montserrat_20;
+#else
+    return LV_FONT_DEFAULT;
+#endif
+}
 static const char *TAG="HalloweenDial";
 static const char *TRACK="/sdcard/Witches_Sound_cleaned_louder.mp3";
 /* First-boot SD provisioning: linker-embedded copy supplied by build Pi. */
@@ -51,7 +68,7 @@ static uint32_t resample_accum=0;
 static int64_t stream_start_us=0;
 static uint64_t samples_sent=0;
 static lv_obj_t *status_label=nullptr,*mode_label=nullptr,*play_button_label=nullptr,*volume_label=nullptr;
-static lv_obj_t *pair_button_label=nullptr,*countdown_label=nullptr,*sound_label=nullptr;
+static lv_obj_t *pair_button_label=nullptr,*countdown_label=nullptr;
 static volatile bool volume_dirty=false;
 static uint64_t volume_changed_ms=0;
 static nvs_handle_t halloween_nvs;
@@ -292,6 +309,7 @@ static lv_obj_t *make_button(lv_obj_t *parent,const char *caption,int x,int y,in
     lv_obj_t *label=lv_label_create(button);
     lv_label_set_text(label,caption);
     lv_obj_set_style_text_color(label,lv_color_hex(primary?0x120E15:0xF1EBFF),0);
+    if(primary)lv_obj_set_style_text_font(label,font_action(),0);
     lv_obj_set_style_text_letter_space(label,primary?3:1,0);
     lv_obj_center(label);
     return label;
@@ -307,6 +325,7 @@ static void ui_create(){
     lv_obj_t *title=lv_label_create(root);
     lv_label_set_text(title,"H A L L O W E E N");
     lv_obj_set_style_text_color(title,lv_color_hex(0xFFAD62),0);
+    lv_obj_set_style_text_font(title,font_heading(),0);
     lv_obj_align(title,LV_ALIGN_TOP_MID,0,31);
 
     lv_obj_t *subtitle=lv_label_create(root);
