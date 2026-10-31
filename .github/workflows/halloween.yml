@@ -1,4 +1,4 @@
-name: Halloween Dial - Build Host Probe
+name: Halloween Dial - Build and Flash
 on:
   push:
     branches: [main]
@@ -11,36 +11,50 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  issues: write
 concurrency:
-  group: halloween-dial-on-builder
-  cancel-in-progress: false
+  group: halloween-dial-hardware
+  cancel-in-progress: true
 jobs:
-  build-host-check:
+  build:
     if: github.repository == 'layuso/Halloween-Audio-Dial-Player' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, Linux, ARM64, halloween-build]
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout trusted main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Host and attached MCU inventory - read only
+      - name: Build two firmware images and flash only the verified connected MCU
+        id: build
         shell: bash
+        env:
+          HALLOWEEN_AUTO_FLASH: '1'
         run: |
-          set -eu
-          echo "Host: $(hostname); User: $(id -un); Arch: $(uname -m)"
-          echo 'Serial devices:'
-          ls -l /dev/serial/by-id/ 2>/dev/null || true
-          ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true
-          echo 'ESP-IDF:'
-          command -v idf.py || true
-          find /home -maxdepth 4 -type f -name export.sh -path '*esp-idf*' -print 2>/dev/null | head -10
-          echo 'Audio source:'
-          test -f /home/layuso/Witches_Sound_cleaned_louder.mp3 && sha256sum /home/layuso/Witches_Sound_cleaned_louder.mp3 || true
-          echo 'Previously installed source:'
-          ls -ld /home/layuso/halloween-bluetooth-dial-src /home/layuso/Halloween-Bluetooth-Dial-source-v0.3.zip 2>/dev/null || true
-      - name: Native schedule test
+          set -o pipefail
+          bash scripts/ci_build.sh 2>&1 | tee "$RUNNER_TEMP/halloween-ci.log"
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: halloween-dial-bin-${{ github.run_id }}
+          path: |
+            output/classic/*.bin
+            output/s3/*.bin
+            output/*/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Report status in issue 1
+        if: always()
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.build.outcome }}
         run: |
-          set -eux
-          cc -std=c11 -Wall -Wextra -Werror -Icommon common/scheduler.c tests/scheduler_test.c -o /tmp/halloween-scheduler-test
-          /tmp/halloween-scheduler-test
+          export RUN_LINK="https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          export LAST_LINE="$(grep -E '(FLASH_(SUCCESS|SKIPPED)|HALLOWEEN_BUILD_|::error::|error:)' "$RUNNER_TEMP/halloween-ci.log" 2>/dev/null | tail -1 | cut -c1-250 || true)"
+          python - <<'PY' > "$RUNNER_TEMP/status.json"
+          import json, os
+          body = 'Build: **%s**\n\n[Inspect run](%s)\n\nDiagnostic: %s' % (os.getenv('OUTCOME','unknown'), os.getenv('RUN_LINK',''), os.getenv('LAST_LINE',''))
+          print(json.dumps({'body': body}))
+          PY
+          curl -fsSL --retry 2 -X POST -H 'Accept: application/vnd.github+json' -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' --data-binary "@$RUNNER_TEMP/status.json" "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/1/comments" || true
