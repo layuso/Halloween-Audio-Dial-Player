@@ -34,7 +34,7 @@ cmake=base/'main/CMakeLists.txt'
 cmake.write_text('''idf_component_register(SRCS "main.cpp" "display_init.cpp" "scheduler.c"
   INCLUDE_DIRS "." REQUIRES fatfs sdmmc nvs_flash esp_timer esp_driver_uart
   esp_driver_gpio esp_driver_spi esp_driver_i2c esp_lcd
-  i2c_bsp lcd_touch_bsp lcd_bl_pwm_bsp chmorgan__esp-audio-player)
+  i2c_bsp lcd_touch_bsp lcd_bl_pwm_bsp user_encoder_bsp chmorgan__esp-audio-player)
 
 target_add_binary_data(${COMPONENT_LIB} "Witches_Sound_cleaned_louder.mp3" BINARY)
 ''')
