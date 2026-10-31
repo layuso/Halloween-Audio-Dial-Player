@@ -33,7 +33,6 @@ function Ensure-Clone([string]$path,[string]$url) {
 if ($Target -in @("classic","both")) {
     $classic = Join-Path $work "classic"
     if (-not (Test-Path (Join-Path $classic 'main\main.c'))) {
-        $env:IDF_PATH = $env:IDF_PATH
         Invoke-Required { python (Join-Path $repo "classic\prepare_classic.py") $classic }
     }
     Push-Location $classic
@@ -68,6 +67,9 @@ if ($Target -in @("s3","both")) {
         if (-not (Test-Path "sdkconfig")) {
             Invoke-Required { idf.py set-target esp32s3 }
         }
+        # Component Manager must download esp-audio-player before its source
+        # can be patched to recognize CRC-protected FF FA MP3 frames.
+        Invoke-Required { idf.py reconfigure }
         Invoke-Required { python (Join-Path $repo "scripts\patch_crc_mp3.py") . }
         Invoke-Required { idf.py build }
     } finally { Pop-Location }
