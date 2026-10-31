@@ -9,16 +9,17 @@ MP3="/home/layuso/Witches_Sound_cleaned_louder.mp3"
 test -r "$MP3" || { echo "::error::Cannot read MP3 at $MP3"; exit 1; }
 export HALLOWEEN_MP3="$MP3"
 file "$MP3"; sha256sum "$MP3"
-echo "ESP-IDF lookup starting"
-echo "ESP-IDF candidates:"
-find /home /opt /usr/local -maxdepth 11 -type f \( -name export.sh -o -name idf.py \) -print 2>/dev/null | grep -Ei '/(esp|idf)' | head -30 || true
-IDF_SCRIPT="$(find /home /opt /usr/local -maxdepth 11 -type f -name export.sh -print 2>/dev/null | grep -Ei '/(esp|idf)' | head -1 || true)"
-if [[ ! -f "$IDF_SCRIPT" ]]; then
-  echo "::error::ESP-IDF export.sh not found; inspect candidate paths above"
+IDF_PATH="${IDF_PATH:-/home/layuso/esp/esp-idf}"
+IDF_TOOLS_PATH="${IDF_TOOLS_PATH:-/home/layuso/.espressif}"
+export IDF_PATH IDF_TOOLS_PATH
+unset IDF_PYTHON_ENV_PATH
+if [[ ! -f "$IDF_PATH/export.sh" ]]; then
+  echo "::error::ESP-IDF export.sh missing at $IDF_PATH" >&2
   exit 1
 fi
+echo "Using ESP-IDF: $IDF_PATH"
 set +u
-source "$IDF_SCRIPT"
+source "$IDF_PATH/export.sh"
 set -u
 idf.py --version
 BUILD_ROOT="$RUNNER_TEMP/halloween-dial-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
