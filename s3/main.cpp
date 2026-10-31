@@ -45,15 +45,16 @@ static uint32_t resample_accum=0;
 static int64_t stream_start_us=0;
 static uint64_t samples_sent=0;
 static lv_obj_t *status_label=nullptr,*mode_label=nullptr,*play_button_label=nullptr,*volume_label=nullptr;
-static nvs_handle_t nvs_handle;
+static nvs_handle_t halloween_nvs;
 
 static uint64_t ms_now(){return (uint64_t)(esp_timer_get_time()/1000);}
 static void uart_cmd(uint8_t b){uart_write_bytes(LINK_UART,&b,1);}
 static void volume_send(){const uint8_t buf[2]={'V',volume};uart_write_bytes(LINK_UART,buf,sizeof(buf));}
-static void settings_save(){nvs_set_u8(nvs_handle,"interval",scheduler.mode);nvs_set_u8(nvs_handle,"volume",volume);nvs_set_u8(nvs_handle,"running",scheduler.enabled?1:0);nvs_commit(nvs_handle);}
+static void settings_save(){nvs_set_u8(halloween_nvs,"interval",scheduler.mode);nvs_set_u8(halloween_nvs,"volume",volume);nvs_set_u8(halloween_nvs,"running",scheduler.enabled?1:0);nvs_commit(halloween_nvs);}
 static void adjust_volume(int delta){
     int v=(int)volume+delta;
-    if(v<0)v=0;if(v>100)v=100;
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
     volume=(uint8_t)v;
     volume_send();settings_save();
     ESP_LOGI(TAG,"volume=%u",(unsigned)volume);
@@ -154,7 +155,7 @@ static esp_err_t set_audio_clock(uint32_t rate,uint32_t bits_cfg,i2s_slot_mode_t
     return ESP_OK;
 }
 static esp_err_t amp_noop(AUDIO_PLAYER_MUTE_SETTING setting){(void)setting;return ESP_OK;}
-static esp_err_t pcm_uart_write(const void *buf,size_t len,size_t *written,uint32_t timeout_ms){
+static esp_err_t pcm_uart_write(void *buf,size_t len,size_t *written,uint32_t timeout_ms){
     (void)timeout_ms;
     /* ESP-audio-player legacy API forces stereo int16 output. Convert it to
        16kHz mono for the 921600 baud UART to the Classic ESP32. */
@@ -255,14 +256,14 @@ static void ui_create(){
 }
 extern "C" void app_main(void){
     ESP_ERROR_CHECK(nvs_flash_init());
-    ESP_ERROR_CHECK(nvs_open("halloween",NVS_READWRITE,&nvs_handle));
-    nvs_get_u8(nvs_handle,"interval",&scheduler.mode);if(scheduler.mode>4)scheduler.mode=4;
-    nvs_get_u8(nvs_handle,"volume",&volume);if(volume>100)volume=65;
-    uint8_t enabled=1;nvs_get_u8(nvs_handle,"running",&enabled);scheduler.enabled=enabled!=0;
+    ESP_ERROR_CHECK(nvs_open("halloween",NVS_READWRITE,&halloween_nvs));
+    nvs_get_u8(halloween_nvs,"interval",&scheduler.mode);if(scheduler.mode>4)scheduler.mode=4;
+    nvs_get_u8(halloween_nvs,"volume",&volume);if(volume>100)volume=65;
+    uint8_t enabled=1;nvs_get_u8(halloween_nvs,"running",&enabled);scheduler.enabled=enabled!=0;
     link_init();volume_send();card_ready=sd_mount();
     audio_player_config_t ap={};
     ap.mute_fn=amp_noop;ap.clk_set_fn=set_audio_clock;ap.write_fn=pcm_uart_write;
-    ap.priority=5;ap.coreID=1;ap.force_stereo=true;
+    ap.priority=5;ap.coreID=1;
     ESP_ERROR_CHECK(audio_player_new(ap));
     audio_player_callback_register(player_events,nullptr);
     display_init();ui_create();
