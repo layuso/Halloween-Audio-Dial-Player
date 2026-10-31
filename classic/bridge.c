@@ -56,11 +56,21 @@ static void receiver(void *unused) {
             switch(state) {
                 case WAIT:
                     if(b==HEADER)state=MARK;
-                    else if(b=='P')request_pair=true;
+                    else if(b=='P'){
+                        ESP_LOGI(TAG,"UART RX: PAIR command received from S3 on GPIO18");
+                        request_pair=true;
+                    }
                     else if(b=='S'){reset_ring();stream_ending=false;stream_active=true;}
                     else if(b=='E'){stream_ending=true;}
                     else if(b=='X'){stream_active=false;stream_ending=false;reset_ring();}
                     else if(b=='V')state=VOLUME;
+                    else {
+                        /* Limit unexpected-byte diagnostics. Audio packets are
+                         * framed separately and should never get here. */
+                        static unsigned unexpected=0;
+                        if(unexpected++ < 12)
+                            ESP_LOGW(TAG,"UART RX unexpected byte 0x%02X on GPIO18",(unsigned)b);
+                    }
                     break;
                 case VOLUME: volume=b>100?100:b;state=WAIT;break;
                 case MARK: state=(b==MARKER)?LEN_LO:WAIT;break;
