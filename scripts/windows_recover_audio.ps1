@@ -10,8 +10,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $repo = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$ports = @(python -m serial.tools.list_ports -v 2>&1)
-if ($LASTEXITCODE -ne 0) { throw "Serial port enumeration failed" }
+# Do not run pyserial's list_ports here: it writes the harmless
+# "1 ports found" summary to stderr, which Windows PowerShell 5.1 treats
+# as a terminating NativeCommandError under ErrorActionPreference=Stop.
+# esptool probes the explicitly requested COM port and verifies chip/MAC.
 $probe = @(python -m esptool --port $Port flash_id 2>&1)
 if ($LASTEXITCODE -ne 0) { throw "Unable to probe $Port; close any serial monitor and verify connector orientation: $($probe -join ' ')" }
 $raw = [string]::Join([Environment]::NewLine,$probe)
