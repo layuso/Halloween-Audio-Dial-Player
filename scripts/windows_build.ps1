@@ -34,6 +34,20 @@ if ($Target -in @("classic","both")) {
     $classic = Join-Path $work "classic"
     if (-not (Test-Path (Join-Path $classic 'main\main.c'))) {
         Invoke-Required { python (Join-Path $repo "classic\prepare_classic.py") $classic }
+    } else {
+        # Recreate the generated ESP-IDF main sources whenever the repo changes.
+        # Otherwise Windows silently reuses an old bridge.c even after git pull.
+        $stage = Join-Path $work ("classic-source-" + [System.IO.Path]::GetRandomFileName())
+        try {
+            Invoke-Required { python (Join-Path $repo "classic\prepare_classic.py") $stage }
+            foreach ($file in @("main.c","bridge.c","bridge.h","CMakeLists.txt")) {
+                Copy-Item (Join-Path $stage "main\$file") (Join-Path $classic "main\$file") -Force
+            }
+            Copy-Item (Join-Path $stage "sdkconfig.defaults") (Join-Path $classic "sdkconfig.defaults") -Force
+            Write-Host "Classic sources synchronized from repository (TX23 RX18)."
+        } finally {
+            if (Test-Path $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
+        }
     }
     Push-Location $classic
     try {
