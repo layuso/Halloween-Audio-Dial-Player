@@ -44,6 +44,9 @@ cm=cmake.read_text()
 # Existing sample builds main.c + bt_app_core.c. Just append bridge.c to SRCS.
 assert 'bt_app_core.c' in cm
 cm=cm.replace('"bt_app_core.c"','"bt_app_core.c" "bridge.c"')
+# Bridge accesses UART and esp_timer directly; IDF 5.x requires explicit component linkage.
+assert 'PRIV_REQUIRES bt nvs_flash' in cm
+cm=cm.replace('PRIV_REQUIRES bt nvs_flash', 'PRIV_REQUIRES bt nvs_flash esp_driver_uart esp_timer', 1)
 cmake.write_text(cm)
 (dest/'sdkconfig.defaults').write_text('CONFIG_EXAMPLE_PEER_DEVICE_NAME="ITSBO-513"\nCONFIG_BT_ENABLED=y\nCONFIG_BT_CLASSIC_ENABLED=y\nCONFIG_BT_BLUEDROID_ENABLED=y\nCONFIG_BT_A2DP_ENABLE=y\n')
 print('A2DP source prepared:',dest)
