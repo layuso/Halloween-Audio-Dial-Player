@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    if: github.repository == 'layuso/Halloween-Audio-Dial-Player' && github.ref == 'refs/heads/main'
+    if: (github.repository == 'layuso/Halloween-Audio-Dial-Player' || github.repository == 'MainCreate/Halloween-Audio-Dial-Player') && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, Linux, ARM64, halloween-build]
     timeout-minutes: 60
     steps:
